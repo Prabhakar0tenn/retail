@@ -4,7 +4,7 @@
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 // IMPORTANT: Replace with your deployed backend URL before deploying frontend
-const API_BASE = 'https://YOUR_BACKEND_URL/api';
+const API_BASE = 'https://retail-d6uo.onrender.com/api';
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 const state = {
