@@ -143,5 +143,17 @@ The backend allows all origins (`*`). Restrict this to your frontend domain in p
 
 ---
 
+## Live Deployment URLs
+
+| Service | URL |
+|---------|-----|
+| Frontend (User Store) | https://retail-bay.vercel.app |
+| Admin Panel | https://retail-bay.vercel.app/admin.html |
+| Backend API | https://retail-d6uo.onrender.com |
+| API Health Check | https://retail-d6uo.onrender.com/api/health |
+
+Frontend is hosted on Vercel (auto-deploys on `git push origin master`).
+Backend is hosted on Render.
+
 ## Last Updated
-2026-08-09 — Initial implementation by Antigravity AI
+2026-08-09 — Initial implementation + deployment by Antigravity AI
