@@ -1,753 +1,443 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   SHOPEASE — Admin Panel JavaScript
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
-// IMPORTANT: Replace with your deployed backend URL before deploying frontend
 const API_BASE = 'https://retail-d6uo.onrender.com/api';
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 const state = {
-  currentSection: 'dashboard',
-  editProductId: null,
+  section: 'dashboard',
+  editId: null,
   tags: [],
   existingTags: [],
   allProducts: [],
-  currentPage: 1,
+  page: 1,
   sort: 'newest',
-  searchQuery: '',
-  deleteTargetId: null,
-  isSidebarOpen: false,
+  deleteId: null,
 };
 
-// ─── DOM ─────────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const fmt = (n) => '₹' + Number(n).toLocaleString('en-IN');
 
-// ─── UTILS ───────────────────────────────────────────────────────────────────
-const formatPrice = (price) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(price);
-
-const escHtml = (str) =>
-  String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-
-function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-let debounceTimer;
-const debounce = (fn, delay = 300) => {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(fn, delay);
-};
+let dTimer;
+const debounce = (fn, ms=300) => { clearTimeout(dTimer); dTimer = setTimeout(fn, ms); };
 
 // ─── TOAST ───────────────────────────────────────────────────────────────────
-function showToast(message, type = 'success') {
-  const container = $('toast-container');
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
-  toast.innerHTML = `<span class="toast-dot"></span>${escHtml(message)}`;
-  container.appendChild(toast);
-
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  $('toasts').appendChild(el);
   setTimeout(() => {
-    toast.classList.add('removing');
-    toast.addEventListener('animationend', () => toast.remove(), { once: true });
-  }, 3500);
+    el.classList.add('removing');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+  }, 3000);
 }
 
 // ─── API ─────────────────────────────────────────────────────────────────────
-async function apiFetch(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, options);
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.message || `HTTP ${res.status}`);
-  return json;
+async function api(path, opts = {}) {
+  const r = await fetch(`${API_BASE}${path}`, opts);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.message || `HTTP ${r.status}`);
+  return j;
 }
 
-// ─── NAVIGATION ──────────────────────────────────────────────────────────────
-function navigateTo(section) {
-  state.currentSection = section;
-
-  // Update sidebar links
-  document.querySelectorAll('.sidebar-link[data-section]').forEach((link) => {
-    link.classList.toggle('active', link.dataset.section === section);
-  });
-
-  // Show/hide sections
-  document.querySelectorAll('.admin-section').forEach((sec) => {
-    sec.classList.toggle('active', sec.id === `section-${section}`);
-  });
-
-  // Update topbar title
-  const titles = { dashboard: 'Dashboard', products: 'Products', add: 'Add Product' };
+// ─── NAVIGATE ─────────────────────────────────────────────────────────────────
+function nav(section) {
+  state.section = section;
+  document.querySelectorAll('.nav-btn[data-section]').forEach(b => b.classList.toggle('active', b.dataset.section === section));
+  document.querySelectorAll('.admin-section').forEach(s => s.classList.toggle('active', s.id === `section-${section}`));
+  const titles = { dashboard: 'Dashboard', products: 'Products', add: state.editId ? 'Edit Product' : 'Add Product' };
   $('topbar-title').textContent = titles[section] || section;
-
-  // Close sidebar on mobile
   closeSidebar();
-
-  // Load data for section
   if (section === 'dashboard') loadDashboard();
-  if (section === 'products') loadAllProducts();
-  if (section === 'add' && !state.editProductId) resetForm();
+  if (section === 'products') loadProducts();
+  if (section === 'add' && !state.editId) resetForm();
 }
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
-function openSidebar() {
-  $('admin-sidebar').classList.add('open');
-  state.isSidebarOpen = true;
-}
-function closeSidebar() {
-  $('admin-sidebar').classList.remove('open');
-  state.isSidebarOpen = false;
-}
+function openSidebar() { $('sidebar').classList.add('open'); }
+function closeSidebar() { $('sidebar').classList.remove('open'); }
 
 // ─── CLOCK ───────────────────────────────────────────────────────────────────
-function updateClock() {
-  const el = $('topbar-time');
-  if (el) {
-    el.textContent = new Date().toLocaleTimeString('en-IN', {
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    });
-  }
+function tick() {
+  $('topbar-time').textContent = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 async function loadDashboard() {
   try {
-    // Load stats
-    const statsData = await apiFetch('/admin/stats');
-    const s = statsData.data;
+    const { data: s } = await api('/admin/stats');
+    $('s-total').textContent = s.totalProducts;
+    $('s-stock').textContent = s.inStock;
+    $('s-oos').textContent = s.outOfStock;
+    $('s-featured').textContent = s.featured;
+    $('s-tags').textContent = s.totalTags;
+    $('s-price').textContent = fmt(s.priceStats?.avg || 0);
 
-    $('stat-total-val').textContent = s.totalProducts;
-    $('stat-stock-val').textContent = s.inStock;
-    $('stat-oos-val').textContent = s.outOfStock;
-    $('stat-featured-val').textContent = s.featured;
-    $('stat-tags-val').textContent = s.totalTags;
-    $('stat-price-val').textContent = formatPrice(s.priceStats?.avg || 0);
-
-    // Load recent products
-    const prodData = await apiFetch('/admin/products?sort=newest&limit=5');
-    renderRecentProducts(prodData.data || []);
-  } catch (err) {
-    console.error('Dashboard load error:', err);
-    showToast('Failed to load dashboard data', 'error');
+    const { data: prods } = await api('/admin/products?sort=newest&limit=5');
+    $('recent-loading').style.display = 'none';
+    $('recent-body').innerHTML = prods.length ? prods.map(rowHtml).join('') : `<tr><td colspan="5" class="table-empty">No products yet</td></tr>`;
+  } catch(e) {
+    toast('Failed to load dashboard', 'error');
   }
 }
 
-function renderRecentProducts(products) {
-  $('recent-loading').style.display = 'none';
-  const tbody = $('recent-products-body');
-
-  if (!products.length) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-3)">No products yet</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = products.map((p) => `
-    <tr>
-      <td>
-        <div style="display:flex;align-items:center;gap:10px">
-          ${p.image?.url
-            ? `<img src="${escHtml(p.image.url)}" class="table-product-image" alt="${escHtml(p.name)}" loading="lazy" />`
-            : `<div class="table-product-image-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`
-          }
-          <span class="table-product-name" title="${escHtml(p.name)}">${escHtml(p.name)}</span>
-        </div>
-      </td>
-      <td class="table-price">${formatPrice(p.price)}</td>
-      <td>
-        <div class="table-tags">
-          ${(p.tags || []).slice(0, 3).map((t) => `<span class="table-tag">${escHtml(t)}</span>`).join('')}
-        </div>
-      </td>
-      <td>
-        <span class="badge ${p.inStock ? 'badge-green' : 'badge-red'}">
-          ${p.inStock ? '● In Stock' : '● Out of Stock'}
-        </span>
-      </td>
-      <td>
-        <div class="table-actions">
-          <button class="icon-btn edit" title="Edit" onclick="startEdit('${p._id}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="icon-btn delete" title="Delete" onclick="confirmDelete('${p._id}', '${escHtml(p.name).replace(/'/g, "\\'")}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
+function rowHtml(p) {
+  return `<tr>
+    <td>
+      <div style="display:flex;align-items:center;gap:10px">
+        ${p.image?.url ? `<img src="${esc(p.image.url)}" class="t-img" alt="" />` : `<div class="t-img-ph">?</div>`}
+        <span class="t-name" title="${esc(p.name)}">${esc(p.name)}</span>
+      </div>
+    </td>
+    <td class="t-price">${fmt(p.price)}</td>
+    <td><div class="t-tags">${(p.tags||[]).slice(0,3).map(t=>`<span class="t-tag">${esc(t)}</span>`).join('')}</div></td>
+    <td><span class="badge ${p.inStock?'badge-green':'badge-red'}">${p.inStock?'In Stock':'Out of Stock'}</span></td>
+    <td>
+      <div class="t-actions">
+        <button class="icon-btn edit" title="Edit" onclick="startEdit('${p._id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+        <button class="icon-btn delete" title="Delete" onclick="confirmDel('${p._id}','${esc(p.name).replace(/'/g,"\\'")}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+      </div>
+    </td>
+  </tr>`;
 }
 
 // ─── ALL PRODUCTS ────────────────────────────────────────────────────────────
-async function loadAllProducts() {
+async function loadProducts() {
   $('all-loading').style.display = 'flex';
-  $('all-products-body').innerHTML = '';
+  $('all-body').innerHTML = '';
   $('all-empty').style.display = 'none';
-  $('admin-pagination').innerHTML = '';
-
+  $('admin-pages').innerHTML = '';
   try {
-    const params = new URLSearchParams({
-      sort: state.sort,
-      page: state.currentPage,
-      limit: 15,
-    });
-
-    const data = await apiFetch(`/admin/products?${params}`);
-    state.allProducts = data.data || [];
-
+    const { data, pagination } = await api(`/admin/products?sort=${state.sort}&page=${state.page}&limit=15`);
+    state.allProducts = data || [];
     $('all-loading').style.display = 'none';
-
-    if (!state.allProducts.length) {
-      $('all-empty').style.display = 'block';
-    } else {
-      renderAllProducts(state.allProducts);
-      renderAdminPagination(data.pagination);
-    }
-  } catch (err) {
+    if (!state.allProducts.length) { $('all-empty').style.display = 'block'; return; }
+    renderAllProducts(state.allProducts);
+    renderAdminPages(pagination);
+  } catch(e) {
     $('all-loading').style.display = 'none';
-    showToast('Failed to load products', 'error');
+    toast('Failed to load products', 'error');
   }
 }
 
-function renderAllProducts(products) {
-  const tbody = $('all-products-body');
-  tbody.innerHTML = products.map((p) => `
-    <tr id="product-row-${p._id}">
+function renderAllProducts(list) {
+  $('all-body').innerHTML = list.map(p => `
+    <tr>
+      <td>${p.image?.url ? `<img src="${esc(p.image.url)}" class="t-img" alt="" />` : `<div class="t-img-ph">?</div>`}</td>
+      <td><span class="t-name" title="${esc(p.name)}">${esc(p.name)}</span></td>
+      <td class="t-price">${fmt(p.price)}</td>
+      <td><div class="t-tags">${(p.tags||[]).slice(0,4).map(t=>`<span class="t-tag">${esc(t)}</span>`).join('')}${p.tags?.length>4?`<span class="t-tag">+${p.tags.length-4}</span>`:''}</div></td>
       <td>
-        ${p.image?.url
-          ? `<img src="${escHtml(p.image.url)}" class="table-product-image" alt="${escHtml(p.name)}" loading="lazy" />`
-          : `<div class="table-product-image-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`
-        }
-      </td>
-      <td>
-        <span class="table-product-name" title="${escHtml(p.name)}">${escHtml(p.name)}</span>
-      </td>
-      <td class="table-price">${formatPrice(p.price)}</td>
-      <td>
-        <div class="table-tags">
-          ${(p.tags || []).slice(0, 4).map((t) => `<span class="table-tag">${escHtml(t)}</span>`).join('')}
-          ${p.tags?.length > 4 ? `<span class="table-tag">+${p.tags.length - 4}</span>` : ''}
-        </div>
-      </td>
-      <td>
-        <button class="icon-btn ${p.inStock ? 'stock-on' : ''}" title="Toggle stock" onclick="toggleStock('${p._id}')">
-          ${p.inStock
-            ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`
-            : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`
-          }
+        <button class="icon-btn ${p.inStock?'on-green':''}" title="${p.inStock?'In Stock':'Out of Stock'}" onclick="toggleStock('${p._id}')">
+          ${p.inStock ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>` : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`}
         </button>
       </td>
       <td>
-        <button class="icon-btn ${p.featured ? 'featured-on' : ''}" title="Toggle featured" onclick="toggleFeatured('${p._id}')">
-          <svg viewBox="0 0 24 24" fill="${p.featured ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <button class="icon-btn ${p.featured?'on-yellow':''}" title="${p.featured?'Featured':'Not featured'}" onclick="toggleFeatured('${p._id}')">
+          <svg viewBox="0 0 24 24" fill="${p.featured?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         </button>
       </td>
       <td>
-        <div class="table-actions">
-          <button class="icon-btn edit" title="Edit product" onclick="startEdit('${p._id}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="icon-btn delete" title="Delete product" onclick="confirmDelete('${p._id}', '${escHtml(p.name).replace(/'/g, "\\'")}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          </button>
+        <div class="t-actions">
+          <button class="icon-btn edit" onclick="startEdit('${p._id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+          <button class="icon-btn delete" onclick="confirmDel('${p._id}','${esc(p.name).replace(/'/g,"\\'")}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
         </div>
       </td>
-    </tr>
-  `).join('');
+    </tr>`).join('');
 }
 
-function renderAdminPagination(pagination) {
-  if (!pagination || pagination.totalPages <= 1) return;
-  const { page, totalPages } = pagination;
-  const container = $('admin-pagination');
-
-  const range = getPageRange(page, totalPages);
-  const buttons = [];
-
-  buttons.push(`<button class="page-btn" ${page <= 1 ? 'disabled' : ''} onclick="adminGoToPage(${page - 1})">← Prev</button>`);
-  range.forEach((p) => {
-    if (p === '...') {
-      buttons.push(`<span class="page-btn" style="opacity:0.5;pointer-events:none">…</span>`);
-    } else {
-      buttons.push(`<button class="page-btn${p === page ? ' active' : ''}" onclick="adminGoToPage(${p})">${p}</button>`);
-    }
+function renderAdminPages(pg) {
+  if (!pg || pg.totalPages <= 1) return;
+  const { page, totalPages } = pg;
+  const range = pageRange(page, totalPages);
+  let html = `<button class="page-btn" ${page<=1?'disabled':''} onclick="adminPage(${page-1})">← Prev</button>`;
+  range.forEach(p => {
+    html += p === '...' ? `<span class="page-btn" style="opacity:.4;pointer-events:none">…</span>`
+      : `<button class="page-btn${p===page?' active':''}" onclick="adminPage(${p})">${p}</button>`;
   });
-  buttons.push(`<button class="page-btn" ${page >= totalPages ? 'disabled' : ''} onclick="adminGoToPage(${page + 1})">Next →</button>`);
-
-  container.innerHTML = buttons.join('');
+  html += `<button class="page-btn" ${page>=totalPages?'disabled':''} onclick="adminPage(${page+1})">Next →</button>`;
+  $('admin-pages').innerHTML = html;
 }
 
-function getPageRange(current, total) {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-  if (current <= 4) return [1, 2, 3, 4, 5, '...', total];
-  if (current >= total - 3) return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
-  return [1, '...', current - 1, current, current + 1, '...', total];
+function pageRange(cur, total) {
+  if (total <= 7) return Array.from({length:total},(_,i)=>i+1);
+  if (cur <= 4) return [1,2,3,4,5,'...',total];
+  if (cur >= total-3) return [1,'...',total-4,total-3,total-2,total-1,total];
+  return [1,'...',cur-1,cur,cur+1,'...',total];
 }
 
-function adminGoToPage(page) {
-  state.currentPage = page;
-  loadAllProducts();
-}
+function adminPage(p) { state.page = p; loadProducts(); }
 
-// ─── TOGGLE STOCK / FEATURED ──────────────────────────────────────────────────
+// ─── TOGGLES ──────────────────────────────────────────────────────────────────
 async function toggleStock(id) {
   try {
-    const data = await apiFetch(`/admin/products/${id}/toggle-stock`, { method: 'PATCH' });
-    showToast(`Stock updated: ${data.data.inStock ? 'In Stock' : 'Out of Stock'}`);
-    loadAllProducts();
-    if (state.currentSection === 'dashboard') loadDashboard();
-  } catch (err) {
-    showToast('Failed to update stock', 'error');
-  }
+    const { data } = await api(`/admin/products/${id}/toggle-stock`, { method: 'PATCH' });
+    toast(`Stock: ${data.inStock ? 'In Stock' : 'Out of Stock'}`);
+    if (state.section === 'products') loadProducts();
+    if (state.section === 'dashboard') loadDashboard();
+  } catch(e) { toast('Failed', 'error'); }
 }
-
 async function toggleFeatured(id) {
   try {
-    const data = await apiFetch(`/admin/products/${id}/toggle-featured`, { method: 'PATCH' });
-    showToast(`Featured: ${data.data.featured ? 'Yes' : 'No'}`);
-    loadAllProducts();
-    if (state.currentSection === 'dashboard') loadDashboard();
-  } catch (err) {
-    showToast('Failed to update featured status', 'error');
-  }
+    const { data } = await api(`/admin/products/${id}/toggle-featured`, { method: 'PATCH' });
+    toast(`Featured: ${data.featured ? 'Yes' : 'No'}`);
+    if (state.section === 'products') loadProducts();
+    if (state.section === 'dashboard') loadDashboard();
+  } catch(e) { toast('Failed', 'error'); }
 }
 
 // ─── TAGS INPUT ───────────────────────────────────────────────────────────────
 function initTagsInput() {
-  const wrapper = $('tags-input-wrapper');
-  const textInput = $('input-tag-text');
-  const display = $('tags-display');
-  const suggestions = $('tag-suggestions');
+  const wrap = $('tags-wrap');
+  const inp = $('tag-input');
+  const disp = $('tags-display');
+  const sug = $('tag-suggestions');
 
-  function renderTags() {
-    display.innerHTML = state.tags.map((tag) =>
-      `<span class="admin-tag-chip" data-tag="${escHtml(tag)}">${escHtml(tag)}</span>`
+  function render() {
+    disp.innerHTML = state.tags.map(t =>
+      `<span class="tag-chip" data-tag="${esc(t)}">${esc(t)}</span>`
     ).join('');
-
-    display.querySelectorAll('.admin-tag-chip').forEach((chip) => {
-      chip.addEventListener('click', () => removeTag(chip.dataset.tag));
+    disp.querySelectorAll('.tag-chip').forEach(c => {
+      c.addEventListener('click', () => { state.tags = state.tags.filter(t => t !== c.dataset.tag); render(); });
     });
   }
 
-  function addTag(raw) {
-    const tag = raw.toLowerCase().trim().replace(/[,\s]+/g, '');
-    if (!tag || state.tags.includes(tag)) return;
-    state.tags.push(tag);
-    renderTags();
-    textInput.value = '';
-    hideSuggestions();
+  function add(raw) {
+    const t = raw.toLowerCase().trim().replace(/,/g,'');
+    if (!t || state.tags.includes(t)) return;
+    state.tags.push(t);
+    render();
+    inp.value = '';
+    hideSug();
   }
 
-  function removeTag(tag) {
-    state.tags = state.tags.filter((t) => t !== tag);
-    renderTags();
-  }
-
-  function showSuggestions(query) {
-    if (!query || !state.existingTags.length) { hideSuggestions(); return; }
-    const matches = state.existingTags.filter(
-      (t) => t.includes(query.toLowerCase()) && !state.tags.includes(t)
-    ).slice(0, 6);
-
-    if (!matches.length) { hideSuggestions(); return; }
-
-    suggestions.innerHTML = matches.map((t) =>
-      `<div class="tag-suggestion-item" data-tag="${escHtml(t)}">${escHtml(t)}</div>`
-    ).join('');
-    suggestions.style.display = 'block';
-
-    suggestions.querySelectorAll('.tag-suggestion-item').forEach((item) => {
-      item.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        addTag(item.dataset.tag);
-      });
+  function showSug(q) {
+    if (!q) { hideSug(); return; }
+    const matches = state.existingTags.filter(t => t.includes(q.toLowerCase()) && !state.tags.includes(t)).slice(0, 6);
+    if (!matches.length) { hideSug(); return; }
+    sug.innerHTML = matches.map(t => `<div class="tag-sug-item" data-t="${esc(t)}">${esc(t)}</div>`).join('');
+    sug.style.display = 'block';
+    sug.querySelectorAll('.tag-sug-item').forEach(el => {
+      el.addEventListener('mousedown', e => { e.preventDefault(); add(el.dataset.t); });
     });
   }
+  function hideSug() { sug.style.display = 'none'; }
 
-  function hideSuggestions() {
-    suggestions.style.display = 'none';
-    suggestions.innerHTML = '';
-  }
-
-  textInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ',') {
-      e.preventDefault();
-      addTag(textInput.value);
-    } else if (e.key === 'Backspace' && !textInput.value && state.tags.length) {
-      removeTag(state.tags[state.tags.length - 1]);
-    }
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(inp.value); }
+    else if (e.key === 'Backspace' && !inp.value && state.tags.length) { state.tags.pop(); render(); }
   });
-
-  textInput.addEventListener('input', () => {
-    showSuggestions(textInput.value.trim());
-  });
-
-  textInput.addEventListener('blur', () => {
-    if (textInput.value.trim()) addTag(textInput.value);
-    setTimeout(hideSuggestions, 150);
-  });
-
-  wrapper.addEventListener('click', () => textInput.focus());
+  inp.addEventListener('input', () => showSug(inp.value.trim()));
+  inp.addEventListener('blur', () => { if (inp.value.trim()) add(inp.value); setTimeout(hideSug, 150); });
+  wrap.addEventListener('click', () => inp.focus());
 }
 
-// Load existing tags for suggestions
-async function loadExistingTags() {
-  try {
-    const data = await fetch(`${API_BASE}/products/tags`).then((r) => r.json());
-    state.existingTags = data.data || [];
-  } catch (_) {}
-}
-
-// ─── PRODUCT FORM ─────────────────────────────────────────────────────────────
+// ─── FORM ─────────────────────────────────────────────────────────────────────
 function resetForm() {
-  state.tags = [];
-  state.editProductId = null;
+  state.tags = []; state.editId = null;
   $('product-form').reset();
-  $('edit-product-id').value = '';
+  $('edit-id').value = '';
   $('tags-display').innerHTML = '';
-  $('input-tag-text').value = '';
-  $('image-preview-wrap').style.display = 'none';
-  $('image-placeholder').style.display = 'block';
-  $('current-image-wrap').style.display = 'none';
-  $('cancel-edit-btn').style.display = 'none';
-  $('form-section-title').textContent = 'Add New Product';
-  $('form-section-sub').textContent = 'Fill in the details below';
-  $('submit-btn-text').textContent = 'Add Product';
-  $('topbar-title').textContent = 'Add Product';
+  $('tag-input').value = '';
+  $('img-preview-wrap').style.display = 'none';
+  $('img-placeholder').style.display = 'block';
+  $('current-img-wrap').style.display = 'none';
+  $('cancel-edit').style.display = 'none';
+  $('form-title').textContent = 'Add New Product';
+  $('form-sub').textContent = 'Fill in the details below';
+  $('submit-text').textContent = 'Add Product';
   $('form-feedback').style.display = 'none';
-  $('desc-char-count').textContent = '0';
-
-  // Clear validation errors
-  ['name', 'price'].forEach((f) => {
-    $(`fg-${f}`)?.querySelector('.form-input')?.classList.remove('is-error');
-    $(`err-${f}`).textContent = '';
-  });
+  $('desc-count').textContent = '0';
+  ['f-name','f-price'].forEach(id => $(`${id}`)?.classList.remove('error'));
+  ['e-name','e-price'].forEach(id => { if ($(id)) $(id).textContent = ''; });
 }
 
 async function startEdit(id) {
   try {
-    const data = await apiFetch(`/products/${id}`);
-    const p = data.data;
-
-    state.editProductId = id;
-    state.tags = [...(p.tags || [])];
-
-    $('edit-product-id').value = id;
-    $('input-name').value = p.name;
-    $('input-price').value = p.price;
-    $('input-description').value = p.description || '';
-    $('desc-char-count').textContent = (p.description || '').length;
-    $('input-instock').checked = p.inStock;
-    $('input-featured').checked = p.featured;
-
-    // Render existing tags
-    $('tags-display').innerHTML = state.tags.map((tag) =>
-      `<span class="admin-tag-chip" data-tag="${escHtml(tag)}">${escHtml(tag)}</span>`
-    ).join('');
-    $('tags-display').querySelectorAll('.admin-tag-chip').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        state.tags = state.tags.filter((t) => t !== chip.dataset.tag);
-        chip.remove();
-      });
+    const { data: p } = await api(`/products/${id}`);
+    state.editId = id; state.tags = [...(p.tags || [])];
+    $('edit-id').value = id;
+    $('f-name').value = p.name;
+    $('f-price').value = p.price;
+    $('f-desc').value = p.description || '';
+    $('desc-count').textContent = (p.description||'').length;
+    $('f-instock').checked = p.inStock;
+    $('f-featured').checked = p.featured;
+    $('tags-display').innerHTML = state.tags.map(t =>`<span class="tag-chip" data-tag="${esc(t)}">${esc(t)}</span>`).join('');
+    $('tags-display').querySelectorAll('.tag-chip').forEach(c => {
+      c.addEventListener('click', () => { state.tags = state.tags.filter(t => t !== c.dataset.tag); c.remove(); });
     });
-
-    // Show current image
-    if (p.image?.url) {
-      $('current-image').src = p.image.url;
-      $('current-image-wrap').style.display = 'block';
-    } else {
-      $('current-image-wrap').style.display = 'none';
-    }
-
-    // Reset new image preview
-    $('image-preview-wrap').style.display = 'none';
-    $('image-placeholder').style.display = 'block';
-    $('image-input').value = '';
-
-    $('form-section-title').textContent = 'Edit Product';
-    $('form-section-sub').textContent = `Editing: ${p.name}`;
-    $('submit-btn-text').textContent = 'Save Changes';
-    $('cancel-edit-btn').style.display = 'inline-flex';
+    if (p.image?.url) { $('current-img').src = p.image.url; $('current-img-wrap').style.display = 'block'; }
+    $('img-preview-wrap').style.display = 'none';
+    $('img-placeholder').style.display = 'block';
+    $('img-input').value = '';
+    $('form-title').textContent = 'Edit Product';
+    $('form-sub').textContent = p.name;
+    $('submit-text').textContent = 'Save Changes';
+    $('cancel-edit').style.display = 'inline-flex';
     $('form-feedback').style.display = 'none';
-
-    navigateTo('add');
-    $('section-add').scrollIntoView({ behavior: 'smooth' });
-  } catch (err) {
-    showToast('Failed to load product for editing', 'error');
-  }
+    nav('add');
+  } catch(e) { toast('Failed to load product', 'error'); }
 }
 
-function validateForm() {
-  let valid = true;
-
-  const name = $('input-name').value.trim();
-  const price = $('input-price').value;
-
-  if (!name) {
-    $('err-name').textContent = 'Product name is required';
-    $('input-name').classList.add('is-error');
-    valid = false;
-  } else {
-    $('err-name').textContent = '';
-    $('input-name').classList.remove('is-error');
-  }
-
-  if (!price || isNaN(parseFloat(price)) || parseFloat(price) < 0) {
-    $('err-price').textContent = 'Enter a valid price (≥ 0)';
-    $('input-price').classList.add('is-error');
-    valid = false;
-  } else {
-    $('err-price').textContent = '';
-    $('input-price').classList.remove('is-error');
-  }
-
-  return valid;
+function validate() {
+  let ok = true;
+  const name = $('f-name').value.trim();
+  const price = $('f-price').value;
+  if (!name) { $('e-name').textContent = 'Required'; $('f-name').classList.add('error'); ok = false; }
+  else { $('e-name').textContent = ''; $('f-name').classList.remove('error'); }
+  if (!price || isNaN(+price) || +price < 0) { $('e-price').textContent = 'Enter valid price'; $('f-price').classList.add('error'); ok = false; }
+  else { $('e-price').textContent = ''; $('f-price').classList.remove('error'); }
+  return ok;
 }
 
-async function handleFormSubmit(e) {
+async function submitForm(e) {
   e.preventDefault();
-  if (!validateForm()) return;
+  if (!validate()) return;
 
-  const submitBtn = $('submit-btn');
+  const btn = $('submit-btn');
   const spinner = $('form-spinner');
-  const btnText = $('submit-btn-text');
-
-  // Disable button
-  submitBtn.disabled = true;
-  spinner.style.display = 'block';
-  btnText.style.opacity = '0.6';
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
   $('form-feedback').style.display = 'none';
 
   try {
-    const formData = new FormData();
-    formData.append('name', $('input-name').value.trim());
-    formData.append('price', $('input-price').value);
-    formData.append('tags', JSON.stringify(state.tags));
-    formData.append('description', $('input-description').value.trim());
-    formData.append('inStock', $('input-instock').checked);
-    formData.append('featured', $('input-featured').checked);
+    const fd = new FormData();
+    fd.append('name', $('f-name').value.trim());
+    fd.append('price', $('f-price').value);
+    fd.append('tags', JSON.stringify(state.tags));
+    fd.append('description', $('f-desc').value.trim());
+    fd.append('inStock', $('f-instock').checked);
+    fd.append('featured', $('f-featured').checked);
+    const img = $('img-input').files[0];
+    if (img) fd.append('image', img);
 
-    const imageFile = $('image-input').files[0];
-    if (imageFile) formData.append('image', imageFile);
+    const isEdit = !!state.editId;
+    await api(isEdit ? `/admin/products/${state.editId}` : '/admin/products', { method: isEdit ? 'PUT' : 'POST', body: fd });
 
-    const isEdit = !!state.editProductId;
-    const url = isEdit ? `/admin/products/${state.editProductId}` : '/admin/products';
-    const method = isEdit ? 'PUT' : 'POST';
-
-    const data = await apiFetch(url, { method, body: formData });
-
-    // Success feedback
-    const feedback = $('form-feedback');
-    feedback.className = 'form-feedback success';
-    feedback.textContent = `✓ Product ${isEdit ? 'updated' : 'created'} successfully!`;
-    feedback.style.display = 'block';
-
-    showToast(`Product ${isEdit ? 'updated' : 'added'} successfully!`);
-
-    if (!isEdit) {
-      resetForm();
-    } else {
-      // Update cancel button shows
-      $('cancel-edit-btn').style.display = 'inline-flex';
-    }
-  } catch (err) {
-    const feedback = $('form-feedback');
-    feedback.className = 'form-feedback error';
-    feedback.textContent = `✗ ${err.message}`;
-    feedback.style.display = 'block';
-    showToast(err.message, 'error');
+    const fb = $('form-feedback');
+    fb.className = 'form-feedback success';
+    fb.textContent = `✓ Product ${isEdit ? 'updated' : 'added'} successfully`;
+    fb.style.display = 'block';
+    toast(`Product ${isEdit ? 'updated' : 'added'}!`);
+    if (!isEdit) resetForm();
+  } catch(e) {
+    const fb = $('form-feedback');
+    fb.className = 'form-feedback error';
+    fb.textContent = `✗ ${e.message}`;
+    fb.style.display = 'block';
+    toast(e.message, 'error');
   } finally {
-    submitBtn.disabled = false;
+    btn.disabled = false;
     spinner.style.display = 'none';
-    btnText.style.opacity = '1';
   }
 }
 
 // ─── IMAGE UPLOAD ─────────────────────────────────────────────────────────────
-function initImageUpload() {
-  const input = $('image-input');
-  const area = $('image-upload-area');
-  const placeholder = $('image-placeholder');
-  const previewWrap = $('image-preview-wrap');
-  const preview = $('image-preview');
-  const removeBtn = $('image-remove-btn');
+function initImgUpload() {
+  const inp = $('img-input');
+  const area = $('img-upload');
+  const ph = $('img-placeholder');
+  const pw = $('img-preview-wrap');
+  const prev = $('img-preview');
 
-  function showPreview(file) {
-    if (!file.type.startsWith('image/')) {
-      showToast('Please select an image file', 'error');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      showToast('Image must be smaller than 5MB', 'error');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      preview.src = e.target.result;
-      previewWrap.style.display = 'block';
-      placeholder.style.display = 'none';
-    };
-    reader.readAsDataURL(file);
+  function show(file) {
+    if (!file.type.startsWith('image/')) { toast('Select an image file', 'error'); return; }
+    if (file.size > 5*1024*1024) { toast('Max 5MB', 'error'); return; }
+    const r = new FileReader();
+    r.onload = e => { prev.src = e.target.result; pw.style.display = 'block'; ph.style.display = 'none'; };
+    r.readAsDataURL(file);
   }
 
-  input.addEventListener('change', () => {
-    if (input.files[0]) showPreview(input.files[0]);
+  inp.addEventListener('change', () => { if (inp.files[0]) show(inp.files[0]); });
+  area.addEventListener('dragover', e => { e.preventDefault(); area.style.borderColor = '#888'; });
+  area.addEventListener('dragleave', () => { area.style.borderColor = ''; });
+  area.addEventListener('drop', e => {
+    e.preventDefault(); area.style.borderColor = '';
+    const f = e.dataTransfer.files[0];
+    if (f) { inp.files = e.dataTransfer.files; show(f); }
   });
-
-  // Drag and drop
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.style.borderColor = 'var(--accent)';
-  });
-  area.addEventListener('dragleave', () => {
-    area.style.borderColor = '';
-  });
-  area.addEventListener('drop', (e) => {
-    e.preventDefault();
-    area.style.borderColor = '';
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      input.files = e.dataTransfer.files;
-      showPreview(file);
-    }
-  });
-
-  removeBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    input.value = '';
-    preview.src = '';
-    previewWrap.style.display = 'none';
-    placeholder.style.display = 'block';
+  $('img-remove').addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    inp.value = ''; prev.src = ''; pw.style.display = 'none'; ph.style.display = 'block';
   });
 }
 
 // ─── DELETE ───────────────────────────────────────────────────────────────────
-function confirmDelete(id, name) {
-  state.deleteTargetId = id;
-  $('delete-product-name-label').textContent = `Delete "${name}"? This cannot be undone.`;
+function confirmDel(id, name) {
+  state.deleteId = id;
+  $('del-name').textContent = `Delete "${name}"? This cannot be undone.`;
   $('delete-modal').style.display = 'flex';
 }
 
-async function executeDelete() {
-  if (!state.deleteTargetId) return;
-
-  const spinner = $('delete-spinner');
-  const btn = $('confirm-delete-btn');
-  spinner.style.display = 'block';
-  btn.disabled = true;
-
+async function execDelete() {
+  if (!state.deleteId) return;
+  const btn = $('confirm-del');
+  const sp = $('del-spinner');
+  btn.disabled = true; sp.style.display = 'inline-block';
   try {
-    await apiFetch(`/admin/products/${state.deleteTargetId}`, { method: 'DELETE' });
-    closeDeleteModal();
-    showToast('Product deleted successfully');
-
-    if (state.currentSection === 'products') loadAllProducts();
-    if (state.currentSection === 'dashboard') loadDashboard();
-  } catch (err) {
-    showToast(`Delete failed: ${err.message}`, 'error');
+    await api(`/admin/products/${state.deleteId}`, { method: 'DELETE' });
+    closeDel();
+    toast('Product deleted');
+    if (state.section === 'products') loadProducts();
+    if (state.section === 'dashboard') loadDashboard();
+  } catch(e) {
+    toast(`Delete failed: ${e.message}`, 'error');
   } finally {
-    spinner.style.display = 'none';
-    btn.disabled = false;
-    state.deleteTargetId = null;
+    btn.disabled = false; sp.style.display = 'none'; state.deleteId = null;
   }
 }
 
-function closeDeleteModal() {
-  $('delete-modal').style.display = 'none';
-  state.deleteTargetId = null;
-}
-
-// ─── SEARCH (admin products) ──────────────────────────────────────────────────
-function initAdminSearch() {
-  $('admin-search').addEventListener('input', () => {
-    const query = $('admin-search').value.toLowerCase().trim();
-    debounce(() => {
-      if (!query) {
-        renderAllProducts(state.allProducts);
-        return;
-      }
-      const filtered = state.allProducts.filter((p) =>
-        p.name.toLowerCase().includes(query) ||
-        (p.tags || []).some((t) => t.includes(query)) ||
-        String(p.price).includes(query)
-      );
-      renderAllProducts(filtered);
-    });
-  });
-
-  $('admin-sort').addEventListener('change', () => {
-    state.sort = $('admin-sort').value;
-    state.currentPage = 1;
-    loadAllProducts();
-  });
-}
-
-// ─── CHAR COUNTER ─────────────────────────────────────────────────────────────
-function initCharCounter() {
-  $('input-description').addEventListener('input', () => {
-    $('desc-char-count').textContent = $('input-description').value.length;
-  });
-}
+function closeDel() { $('delete-modal').style.display = 'none'; state.deleteId = null; }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 function init() {
-  // Navigation
-  document.querySelectorAll('.sidebar-link[data-section]').forEach((link) => {
-    link.addEventListener('click', () => navigateTo(link.dataset.section));
-  });
-  $('dash-view-all-btn')?.addEventListener('click', () => navigateTo('products'));
-  $('products-add-new-btn')?.addEventListener('click', () => {
-    state.editProductId = null;
-    resetForm();
-    navigateTo('add');
-  });
-  $('empty-add-btn')?.addEventListener('click', () => {
-    state.editProductId = null;
-    resetForm();
-    navigateTo('add');
-  });
-  $('cancel-edit-btn')?.addEventListener('click', () => {
-    state.editProductId = null;
-    resetForm();
-  });
-  $('cancel-delete-btn')?.addEventListener('click', closeDeleteModal);
-  $('confirm-delete-btn')?.addEventListener('click', executeDelete);
-  $('delete-modal')?.addEventListener('click', (e) => {
-    if (e.target === $('delete-modal')) closeDeleteModal();
-  });
+  // Nav
+  document.querySelectorAll('.nav-btn[data-section]').forEach(b => b.addEventListener('click', () => nav(b.dataset.section)));
+  $('dash-all-btn').addEventListener('click', () => nav('products'));
+  $('products-add-btn').addEventListener('click', () => { state.editId = null; resetForm(); nav('add'); });
+  $('empty-add-btn')?.addEventListener('click', () => { state.editId = null; resetForm(); nav('add'); });
+  $('cancel-edit').addEventListener('click', () => { state.editId = null; resetForm(); });
 
   // Sidebar
-  $('topbar-menu-btn')?.addEventListener('click', openSidebar);
-  $('sidebar-close-btn')?.addEventListener('click', closeSidebar);
+  $('topbar-menu').addEventListener('click', openSidebar);
+  $('sidebar-close').addEventListener('click', closeSidebar);
 
-  // Form
-  $('product-form')?.addEventListener('submit', handleFormSubmit);
+  // Sort
+  $('admin-sort').addEventListener('change', () => { state.sort = $('admin-sort').value; state.page = 1; loadProducts(); });
 
-  // Keyboard
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeDeleteModal();
+  // Search (client-side filter on loaded products)
+  $('admin-search-input').addEventListener('input', () => {
+    const q = $('admin-search-input').value.toLowerCase().trim();
+    debounce(() => {
+      if (!q) { renderAllProducts(state.allProducts); return; }
+      renderAllProducts(state.allProducts.filter(p =>
+        p.name.toLowerCase().includes(q) || (p.tags||[]).some(t => t.includes(q)) || String(p.price).includes(q)
+      ));
+    });
   });
 
-  // Image upload
-  initImageUpload();
+  // Form
+  $('product-form').addEventListener('submit', submitForm);
+  $('f-desc').addEventListener('input', () => $('desc-count').textContent = $('f-desc').value.length);
 
-  // Tags input
+  // Delete modal
+  $('cancel-del').addEventListener('click', closeDel);
+  $('confirm-del').addEventListener('click', execDelete);
+  $('delete-modal').addEventListener('click', e => { if (e.target === $('delete-modal')) closeDel(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDel(); });
+
+  // Image + Tags
+  initImgUpload();
   initTagsInput();
 
-  // Admin search
-  initAdminSearch();
-
-  // Char counter
-  initCharCounter();
+  // Load existing tags for autocomplete
+  fetch(`${API_BASE}/products/tags`).then(r=>r.json()).then(d => { state.existingTags = d.data || []; }).catch(()=>{});
 
   // Clock
-  updateClock();
-  setInterval(updateClock, 60000);
+  tick(); setInterval(tick, 60000);
 
-  // Load existing tags for suggestions
-  loadExistingTags();
-
-  // Load initial dashboard
+  // Load dashboard
   loadDashboard();
 }
 
